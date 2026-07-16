@@ -5,7 +5,7 @@ const Store={
 };
 
 let profile=Store.load()||{
-  name:"Fred",level:"A2",accent:"en-GB",subtitles:true,speed:.85,
+  name:"Fred",level:"A2",accent:"en-US",subtitles:true,speed:.85,
   points:0,answered:0,correct:0,dialogs:0,vocabTopic:"Alle",grammarTopic:"Alle",lastMode:"vocab"
 };
 
@@ -21,90 +21,273 @@ const levelPill=document.getElementById("levelPill");
 function save(){Store.save(profile);levelPill.textContent=profile.level}
 
 const SpeechController={
-  queue:[],active:false,generation:0,current:null,voices:[],startTimer:null,
+  queue:[],
+  active:false,
+  generation:0,
+  currentUtterance:null,
+  voices:[],
+
   init(){
     if(!this.supported())return;
-    const loadVoices=()=>{this.voices=window.speechSynthesis.getVoices()||[]};
+
+    const loadVoices=()=>{
+      this.voices=window.speechSynthesis.getVoices() || [];
+    };
+
     loadVoices();
-    window.speechSynthesis.addEventListener("voiceschanged",loadVoices);
+    window.speechSynthesis.onvoiceschanged=loadVoices;
+
     document.addEventListener("visibilitychange",()=>{
-      if(document.visibilityState==="visible"&&window.speechSynthesis.paused){
+      if(
+        document.visibilityState==="visible" &&
+        window.speechSynthesis &&
+        window.speechSynthesis.paused
+      ){
         try{window.speechSynthesis.resume()}catch{}
       }
     });
   },
-  supported(){return Boolean(window.speechSynthesis&&typeof window.SpeechSynthesisUtterance==="function")},
-  locale(){return profile.accent==="en-US"?"en-US":"en-GB"},
+
+  supported(){
+    return Boolean(
+      window.speechSynthesis &&
+      typeof window.SpeechSynthesisUtterance==="function"
+    );
+  },
+
+  locale(){
+    return "en-US";
+  },
+
   chooseVoice(){
     if(!this.supported())return null;
-    const locale=this.locale(),voices=this.voices.length?this.voices:(window.speechSynthesis.getVoices()||[]);
-    return voices.find(v=>String(v.lang).toLowerCase()===locale.toLowerCase())||voices.find(v=>/^en/i.test(String(v.lang)))||null;
+
+    const locale=this.locale();
+    const voices=this.voices.length
+      ? this.voices
+      : (window.speechSynthesis.getVoices() || []);
+
+    const exact=voices.find(v=>
+      String(v.lang).toLowerCase()===locale.toLowerCase()
+    );
+    if(exact)return exact;
+
+    if(locale==="en-US"){
+      const latin=voices.find(v=>
+        /^en-(us|ca)/i.test(String(v.lang))
+      );
+      if(latin)return latin;
+    }
+
+    return voices.find(v=>/^en/i.test(String(v.lang))) || null;
   },
+
   splitText(text){
-    const clean=String(text||"").replace(/\s+/g," ").trim();
+    const clean=String(text || "").replace(/\s+/g," ").trim();
     if(!clean)return [];
-    const parts=clean.match(/[^.!?;:]+[.!?;:]*/g)||[clean],chunks=[];
-    for(const part of parts){
-      const value=part.trim();
+
+    const sentences=clean.match(/[^.!?;:]+[.!?;:]*/g) || [clean];
+    const chunks=[];
+
+    for(const sentence of sentences){
+      const value=sentence.trim();
       if(!value)continue;
-      if(value.length<=180){chunks.push(value);continue}
-      let current="";
-      for(const word of value.split(/\s+/)){
-        const candidate=current?current+" "+word:word;
-        if(candidate.length>150&&current){chunks.push(current);current=word}else current=candidate;
+
+      if(value.length<=180){
+        chunks.push(value);
+        continue;
       }
+
+      const words=value.split(/\s+/);
+      let current="";
+
+      for(const word of words){
+        const candidate=current ? current+" "+word : word;
+        if(candidate.length>150 && current){
+          chunks.push(current);
+          current=word;
+        }else{
+          current=candidate;
+        }
+      }
+
       if(current)chunks.push(current);
     }
+
     return chunks;
   },
-  estimate(text){const words=String(text||"").trim().split(/\s+/).filter(Boolean).length,rate=Math.max(.55,Math.min(1.15,Number(profile.speed)||.85));return Math.max(2400,Math.min(32000,(words*520)/rate+1800))},
-  speak(text,{interrupt=false}={}){
+
+  estimateDuration(text){
+    const words=String(text || "").trim().split(/\s+/).filter(Boolean).length;
+    const rate=Math.max(.55,Math.min(1.15,Number(profile.speed)||.85));
+    return Math.max(2400,Math.min(32000,(words*520)/rate+1800));
+  },
+
+  speak(text,options={}){
     return new Promise(resolve=>{
       const chunks=this.splitText(text);
-      if(!chunks.length||!this.supported()){resolve();return}
-      if(interrupt)this.stop();
-      this.queue.push({chunks,index:0,generation:this.generation,resolve,locale:this.locale(),rate:Math.max(.55,Math.min(1.15,Number(profile.speed)||.85))});
-      this.schedule();
+
+      if(!chunks.length || !this.supported()){
+        resolve();
+        return;
+      }
+
+      if(options.interrupt)this.stop();
+
+      this.queue.push({
+        chunks,
+        index:0,
+        generation:this.generation,
+        resolve,
+        locale:this.locale(),
+        rate:Math.max(.55,Math.min(1.15,Number(profile.speed)||.85))
+      });
+
+      this.process();
     });
   },
-  schedule(){
-    if(this.active||this.startTimer||!this.queue.length)return;
-    this.startTimer=setTimeout(()=>{this.startTimer=null;this.process()},250);
-  },
+
   process(){
-    if(this.active||!this.queue.length)return;
+    if(this.active || !this.queue.length)return;
+
     const item=this.queue[0];
-    if(item.generation!==this.generation||item.index>=item.chunks.length){this.queue.shift();item.resolve();this.process();return}
+
+    if(item.generation!==this.generation){
+      this.queue.shift();
+      item.resolve();
+      this.process();
+      return;
+    }
+
+    if(item.index>=item.chunks.length){
+      this.queue.shift();
+      item.resolve();
+      this.process();
+      return;
+    }
+
     this.active=true;
-    const u=new SpeechSynthesisUtterance(item.chunks[item.index]);
-    u.lang=item.locale;u.rate=item.rate;u.pitch=1;u.volume=1;
-    const voice=this.chooseVoice();if(voice)u.voice=voice;
+    this.speakChunk(item);
+  },
+
+  speakChunk(item){
+    const text=item.chunks[item.index];
+    const utterance=new SpeechSynthesisUtterance(text);
+
+    utterance.lang=item.locale;
+    utterance.rate=item.rate;
+    utterance.pitch=1;
+    utterance.volume=1;
+
+    const voice=this.chooseVoice();
+    if(voice)utterance.voice=voice;
+
     let finished=false;
+    let fallbackTimer;
+    let resumeTimer;
+
     const finish=()=>{
-      if(finished)return;finished=true;clearTimeout(fallback);clearInterval(resumeTimer);
-      if(this.current===u)this.current=null;
+      if(finished)return;
+      finished=true;
+      clearTimeout(fallbackTimer);
+      clearInterval(resumeTimer);
+
+      if(this.currentUtterance===utterance){
+        this.currentUtterance=null;
+      }
+
       this.active=false;
-      if(item.generation!==this.generation){if(this.queue[0]===item){this.queue.shift();item.resolve()}}
-      else item.index++;
+
+      if(item.generation!==this.generation){
+        if(this.queue[0]===item){
+          this.queue.shift();
+          item.resolve();
+        }
+        this.process();
+        return;
+      }
+
+      item.index++;
       this.process();
     };
-    u.onend=finish;u.onerror=()=>setTimeout(finish,250);
-    const fallback=setTimeout(finish,this.estimate(item.chunks[item.index]));
-    const resumeTimer=setInterval(()=>{if(item.generation===this.generation&&window.speechSynthesis.speaking&&window.speechSynthesis.paused)window.speechSynthesis.resume()},900);
-    this.current=u;
-    try{window.speechSynthesis.resume();window.speechSynthesis.speak(u)}catch{finish()}
+
+    utterance.onend=finish;
+    utterance.onerror=event=>{
+      if(
+        item.generation!==this.generation ||
+        event.error==="canceled" ||
+        event.error==="interrupted"
+      ){
+        finish();
+      }else{
+        setTimeout(finish,250);
+      }
+    };
+
+    fallbackTimer=setTimeout(finish,this.estimateDuration(text));
+
+    resumeTimer=setInterval(()=>{
+      try{
+        if(
+          item.generation===this.generation &&
+          window.speechSynthesis &&
+          window.speechSynthesis.speaking &&
+          window.speechSynthesis.paused
+        ){
+          window.speechSynthesis.resume();
+        }
+      }catch{}
+    },900);
+
+    this.currentUtterance=utterance;
+
+    try{
+      window.speechSynthesis.resume();
+      window.speechSynthesis.speak(utterance);
+    }catch{
+      finish();
+    }
   },
+
   stop(){
     this.generation++;
-    clearTimeout(this.startTimer);this.startTimer=null;
-    for(const item of this.queue.splice(0)){try{item.resolve()}catch{}}
-    const wasActive=this.active||Boolean(this.current)||Boolean(window.speechSynthesis&&window.speechSynthesis.speaking);
-    if(wasActive){try{window.speechSynthesis.cancel()}catch{}}
-    this.current=null;this.active=false;
+
+    const pending=this.queue.splice(0);
+    for(const item of pending){
+      try{item.resolve()}catch{}
+    }
+
+    try{
+      window.speechSynthesis.cancel();
+    }catch{}
+
+    this.currentUtterance=null;
+    this.active=false;
+  },
+
+  test(){
+    const sample=this.locale()==="en-US"
+      ? "Hola. Esta es la voz de Español Step para Latinoamérica."
+      : "Hola. Esta es la voz de Español Step para España.";
+    return this.speak(sample,{interrupt:true});
+  },
+
+  status(){
+    return {
+      supported:this.supported(),
+      active:this.active,
+      queued:this.queue.length,
+      locale:this.locale(),
+      voice:this.chooseVoice()?.name || null
+    };
   }
 };
+
 SpeechController.init();
-function speak(text,options){return SpeechController.speak(text,options)}
+
+function speak(text,options){
+  return SpeechController.speak(text,options);
+}
 function nav(to){
   route=to;
   document.querySelectorAll(".nav-btn").forEach(b=>b.classList.toggle("active",b.dataset.route===to));
@@ -206,8 +389,7 @@ function settingsView(){
         ${["A1","A2","B1","B2"].map(x=>`<option ${x===profile.level?"selected":""}>${x}</option>`).join("")}
       </select></label>
       <label>Englisch<select id="setAccent">
-        <option value="en-GB" ${profile.accent==="en-GB"?"selected":""}>Britisch</option>
-        <option value="en-US" ${profile.accent==="en-US"?"selected":""}>Amerikanisch</option>
+        <option value="en-US" selected>Amerikanisch (funktionierende Systemstimme)</option>
       </select></label>
       <label>Sprechgeschwindigkeit<input id="setSpeed" type="range" min=".55" max="1.15" step=".1" value="${profile.speed}"></label>
       <label><input id="setSubs" type="checkbox" ${profile.subtitles?"checked":""}> Deutsche Untertitel</label>

@@ -1,4 +1,4 @@
-const CACHE="english-step-stable-1.6.4.7";
+const CACHE="english-step-stable-1.6.4.11";
 const CORE=["./","./index.html","./style.css","./manifest.webmanifest","./icon-180.png","./icon-512.png"];
 self.addEventListener("install",e=>{self.skipWaiting();e.waitUntil(caches.open(CACHE).then(c=>c.addAll(CORE)))});
 self.addEventListener("activate",e=>{e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});
