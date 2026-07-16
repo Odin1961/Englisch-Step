@@ -21,27 +21,83 @@ const levelPill=document.getElementById("levelPill");
 function save(){Store.save(profile);levelPill.textContent=profile.level}
 
 const SpeechController={
-  chain:Promise.resolve(),generation:0,current:null,
-  supported(){return Boolean(window.speechSynthesis&&typeof window.SpeechSynthesisUtterance==="function")},
-  chooseVoice(){if(!this.supported())return null;const voices=window.speechSynthesis.getVoices()||[],accent=profile.accent||"en-GB",base=accent.split("-")[0];return voices.find(v=>v.lang===accent)||voices.find(v=>String(v.lang).startsWith(base))||null},
-  estimate(text){const words=String(text||"").trim().split(/\s+/).filter(Boolean).length,rate=Math.max(.55,Math.min(1.15,Number(profile.speed)||.85));return Math.max(2500,Math.min(30000,(words*520)/rate+1800))},
-  speakOne(text,token){return new Promise(resolve=>{const value=String(text||"").trim();if(!value||!this.supported()||token!==this.generation){resolve();return}const u=new SpeechSynthesisUtterance(value);u.lang=profile.accent||"en-GB";u.rate=Math.max(.55,Math.min(1.15,Number(profile.speed)||.85));const voice=this.chooseVoice();if(voice)u.voice=voice;let finished=false,resumeTimer=null;const finish=()=>{if(finished)return;finished=true;clearTimeout(fallback);clearInterval(resumeTimer);if(this.current===u)this.current=null;resolve()};u.onend=finish;u.onerror=e=>{console.warn("Sprachausgabe fehlgeschlagen:",e.error||e);finish()};const fallback=setTimeout(finish,this.estimate(value));resumeTimer=setInterval(()=>{if(token===this.generation&&window.speechSynthesis&&window.speechSynthesis.speaking&&window.speechSynthesis.paused)window.speechSynthesis.resume()},1200);this.current=u;try{window.speechSynthesis.resume();window.speechSynthesis.speak(u)}catch{finish()}})},
-  speak(text,{interrupt=false}={}){
-    if(interrupt)this.stop();
-    const token=this.generation,task=()=>this.speakOne(text,token);
-    // Den ersten Satz sofort starten. Besonders Safari/iOS blockiert die
-    // Sprachausgabe oft, wenn speechSynthesis.speak() erst in einem
-    // Promise-Microtask und damit außerhalb der Benutzeraktion aufgerufen wird.
-    if(!this.current){
-      const running=task();
-      this.chain=running.catch(()=>{});
-      return running;
-    }
-    this.chain=this.chain.then(task,task);
-    return this.chain;
+  queue:[],active:false,generation:0,current:null,voices:[],
+  init(){
+    if(!this.supported())return;
+    const loadVoices=()=>{this.voices=window.speechSynthesis.getVoices()||[]};
+    loadVoices();
+    window.speechSynthesis.addEventListener("voiceschanged",loadVoices);
+    document.addEventListener("visibilitychange",()=>{
+      if(document.visibilityState==="visible"&&window.speechSynthesis.paused){
+        try{window.speechSynthesis.resume()}catch{}
+      }
+    });
   },
-  stop(){this.generation++;try{if(window.speechSynthesis)window.speechSynthesis.cancel()}catch{}this.current=null;this.chain=Promise.resolve()}
+  supported(){return Boolean(window.speechSynthesis&&typeof window.SpeechSynthesisUtterance==="function")},
+  locale(){return profile.accent==="en-US"?"en-US":"en-GB"},
+  chooseVoice(){
+    if(!this.supported())return null;
+    const locale=this.locale(),voices=this.voices.length?this.voices:(window.speechSynthesis.getVoices()||[]);
+    return voices.find(v=>String(v.lang).toLowerCase()===locale.toLowerCase())||voices.find(v=>/^en/i.test(String(v.lang)))||null;
+  },
+  splitText(text){
+    const clean=String(text||"").replace(/\s+/g," ").trim();
+    if(!clean)return [];
+    const parts=clean.match(/[^.!?;:]+[.!?;:]*/g)||[clean],chunks=[];
+    for(const part of parts){
+      const value=part.trim();
+      if(!value)continue;
+      if(value.length<=180){chunks.push(value);continue}
+      let current="";
+      for(const word of value.split(/\s+/)){
+        const candidate=current?current+" "+word:word;
+        if(candidate.length>150&&current){chunks.push(current);current=word}else current=candidate;
+      }
+      if(current)chunks.push(current);
+    }
+    return chunks;
+  },
+  estimate(text){const words=String(text||"").trim().split(/\s+/).filter(Boolean).length,rate=Math.max(.55,Math.min(1.15,Number(profile.speed)||.85));return Math.max(2400,Math.min(32000,(words*520)/rate+1800))},
+  speak(text,{interrupt=false}={}){
+    return new Promise(resolve=>{
+      const chunks=this.splitText(text);
+      if(!chunks.length||!this.supported()){resolve();return}
+      if(interrupt)this.stop();
+      this.queue.push({chunks,index:0,generation:this.generation,resolve,locale:this.locale(),rate:Math.max(.55,Math.min(1.15,Number(profile.speed)||.85))});
+      this.process();
+    });
+  },
+  process(){
+    if(this.active||!this.queue.length)return;
+    const item=this.queue[0];
+    if(item.generation!==this.generation||item.index>=item.chunks.length){this.queue.shift();item.resolve();this.process();return}
+    this.active=true;
+    const u=new SpeechSynthesisUtterance(item.chunks[item.index]);
+    u.lang=item.locale;u.rate=item.rate;u.pitch=1;u.volume=1;
+    const voice=this.chooseVoice();if(voice)u.voice=voice;
+    let finished=false;
+    const finish=()=>{
+      if(finished)return;finished=true;clearTimeout(fallback);clearInterval(resumeTimer);
+      if(this.current===u)this.current=null;
+      this.active=false;
+      if(item.generation!==this.generation){if(this.queue[0]===item){this.queue.shift();item.resolve()}}
+      else item.index++;
+      this.process();
+    };
+    u.onend=finish;u.onerror=()=>setTimeout(finish,250);
+    const fallback=setTimeout(finish,this.estimate(item.chunks[item.index]));
+    const resumeTimer=setInterval(()=>{if(item.generation===this.generation&&window.speechSynthesis.speaking&&window.speechSynthesis.paused)window.speechSynthesis.resume()},900);
+    this.current=u;
+    try{window.speechSynthesis.resume();window.speechSynthesis.speak(u)}catch{finish()}
+  },
+  stop(){
+    this.generation++;
+    for(const item of this.queue.splice(0)){try{item.resolve()}catch{}}
+    try{window.speechSynthesis.cancel()}catch{}
+    this.current=null;this.active=false;
+  }
 };
+SpeechController.init();
 function speak(text,options){return SpeechController.speak(text,options)}
 function nav(to){
   route=to;
