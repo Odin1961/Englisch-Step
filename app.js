@@ -21,7 +21,7 @@ const levelPill=document.getElementById("levelPill");
 function save(){Store.save(profile);levelPill.textContent=profile.level}
 
 const SpeechController={
-  queue:[],active:false,generation:0,current:null,voices:[],
+  queue:[],active:false,generation:0,current:null,voices:[],startTimer:null,
   init(){
     if(!this.supported())return;
     const loadVoices=()=>{this.voices=window.speechSynthesis.getVoices()||[]};
@@ -64,8 +64,12 @@ const SpeechController={
       if(!chunks.length||!this.supported()){resolve();return}
       if(interrupt)this.stop();
       this.queue.push({chunks,index:0,generation:this.generation,resolve,locale:this.locale(),rate:Math.max(.55,Math.min(1.15,Number(profile.speed)||.85))});
-      this.process();
+      this.schedule();
     });
+  },
+  schedule(){
+    if(this.active||this.startTimer||!this.queue.length)return;
+    this.startTimer=setTimeout(()=>{this.startTimer=null;this.process()},250);
   },
   process(){
     if(this.active||!this.queue.length)return;
@@ -92,6 +96,7 @@ const SpeechController={
   },
   stop(){
     this.generation++;
+    clearTimeout(this.startTimer);this.startTimer=null;
     for(const item of this.queue.splice(0)){try{item.resolve()}catch{}}
     const wasActive=this.active||Boolean(this.current)||Boolean(window.speechSynthesis&&window.speechSynthesis.speaking);
     if(wasActive){try{window.speechSynthesis.cancel()}catch{}}
