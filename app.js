@@ -93,7 +93,8 @@ const SpeechController={
   stop(){
     this.generation++;
     for(const item of this.queue.splice(0)){try{item.resolve()}catch{}}
-    try{window.speechSynthesis.cancel()}catch{}
+    const wasActive=this.active||Boolean(this.current)||Boolean(window.speechSynthesis&&window.speechSynthesis.speaking);
+    if(wasActive){try{window.speechSynthesis.cancel()}catch{}}
     this.current=null;this.active=false;
   }
 };
